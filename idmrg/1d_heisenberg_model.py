@@ -2,8 +2,23 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 import time
+from typing import Tuple, List, Dict
+
 
 class HeisenbergDMRG:
+    '''
+    1D Heisenberg 模型的哈密顿量 H
+    H = -J * ∑(i=1 to L-1) (S_i ⋅ S_(i+1))
+
+    其中：
+    J 是耦合常数，表示自旋之间的相互作用强度。
+    L 是系统中自旋粒子的总数。
+    S_i 是第 i 个自旋算符，包含三个分量：
+    S_i = (S_x^i, S_y^i, S_z^i)
+
+    自旋之间的相互作用项可以具体表示为：
+    H = -J * ∑(i=1 to L-1) (S_x^i S_x^(i+1) + S_y^i S_y^(i+1) + S_z^i S_z^(i+1))
+    '''
     def __init__(self, L, J=1.0, max_states=50, convergence_threshold=1e-5):
         self.L = L  
         self.J = J  
@@ -19,7 +34,7 @@ class HeisenbergDMRG:
         self.right_block = self._init_site()
         self.current_size = 1  
 
-    def _init_site(self):
+    def _init_site(self) -> Dict[str, scipy.sparse.csr_matrix]:
         return {
             'H': scipy.sparse.csr_matrix((2, 2)),  # 保持稀疏格式
             'Sx': self.Sx,
@@ -27,7 +42,7 @@ class HeisenbergDMRG:
             'Sz': self.Sz
         }
     
-    def enlarge_block(self, block):
+    def enlarge_block(self, block: Dict[str, scipy.sparse.csr_matrix]) -> Dict[str, scipy.sparse.csr_matrix]:
         """
         扩大量子块的维度，包括自旋耦合的效应
         
@@ -48,7 +63,7 @@ class HeisenbergDMRG:
             'Sz': scipy.sparse.kron(identity_dim, self.Sz, format='csr')
         }
     
-    def get_superblock_hamiltonian(self, left_block, right_block):
+    def get_superblock_hamiltonian(self, left_block: Dict[str, scipy.sparse.csr_matrix], right_block: Dict[str, scipy.sparse.csr_matrix]) -> scipy.sparse.csr_matrix:
         """构造超级块哈密顿量
         H_super = H_left ⊗ I_right + I_left ⊗ H_right + J * (Sᵡ_left ⊗ Sᵡ_right + Sʏ_left ⊗ Sʏ_right + Sᶻ_left ⊗ Sᶻ_right)
         """
@@ -66,7 +81,7 @@ class HeisenbergDMRG:
     
         return H_super
     
-    def dmrg_step(self):
+    def dmrg_step(self)-> Tuple[float, float]:
         """执行一次DMRG迭代
         1. 扩展左右量子块
         2. 构造超级块哈密顿量
@@ -118,9 +133,9 @@ class HeisenbergDMRG:
         }
 
         self.current_size += 1
-        return energy[0], np.sum(s_right[:num_states]) + np.sum(s_left[:num_states])
+        return energy[0], (np.sum(s_right[:num_states]) + np.sum(s_left[:num_states])) / 2
 
-    def _transform_operator(self, operator, transformation_matrix):
+    def _transform_operator(self, operator: scipy.sparse.csr_matrix, transformation_matrix: np.ndarray) -> scipy.sparse.csr_matrix:
         """对算符进行变换以得到新的算符
         
         A' = T† A T
@@ -128,14 +143,14 @@ class HeisenbergDMRG:
         """
         return transformation_matrix.conj().T @ operator @ transformation_matrix
     
-    def run(self):
+    def run(self) -> Tuple[List[float], List[float]]:
         energies = []
         truncation_errors = []
         
         for step in range(self.L - 1):
             energy, truncation_weight = self.dmrg_step()
             per_site_energy = energy / (self.current_size * 2)
-            truncation_error = 2 - truncation_weight
+            truncation_error = 1 - truncation_weight
             
             if energies and abs(per_site_energy - energies[-1]) < self.convergence_threshold:
                 print(f"Converged at step {self.current_size}: Per site energy = {per_site_energy:.10f}")
@@ -151,7 +166,7 @@ class HeisenbergDMRG:
         
         return energies, truncation_errors
 
-def main():
+def main()  -> Tuple[List[float], List[float]]:
     L = 100
     J = 1.0
     max_states = 20
