@@ -1,205 +1,186 @@
 import numpy as np
+import scipy.sparse
 import scipy.sparse.linalg
 import time
-from typing import List, Tuple
+from typing import Tuple, List, Dict
 
-class HeisenbergMPS:
-    def __init__(self, L: int, J: float = 1.0, max_bond_dim: int = 50, convergence_threshold: float = 1e-5):
-        self.L = L
-        self.J = J
-        self.max_bond_dim = max_bond_dim
+class HeisenbergDMRG:
+    '''
+    1D Heisenberg 模型的哈密顿量 H
+    H = J * ∑(i=1 to L-1) S_i ⋅ S_(i+1)
+      = J/2 * ∑(i=1 to L-1) (S⁺_i S⁻_(i+1) + S⁻_i S⁺_(i+1)) + J * ∑(i=1 to L-1) Sᶻ_i Sᶻ_(i+1)
+    其中：
+    J 是耦合常数，表示自旋之间的相互作用强度。
+    L 是系统中自旋粒子的总数。
+    '''
+    def __init__(self, L, J=1.0, max_states=50, convergence_threshold=1e-5):
+        self.L = L  
+        self.J = J  
+        self.max_states = max_states  
         self.convergence_threshold = convergence_threshold
         
-        # Pauli matrices
-        self.Sx = 0.5 * np.array([[0., 1.], [1., 0.]])
-        self.Sy = 0.5 * np.array([[0., -1j], [1j, 0.]])
-        self.Sz = 0.5 * np.array([[1., 0.], [0., -1.]])
-        self.I2 = np.eye(2)
+        self.Sz = scipy.sparse.csr_matrix(0.5 * np.array([[1., 0.], [0., -1.]]))
+        self.Splus = scipy.sparse.csr_matrix(np.array([[0., 1.], [0., 0.]]))
+        self.Sminus = scipy.sparse.csr_matrix(np.array([[0., 0.], [1., 0.]]))
+        self.I2 = scipy.sparse.csr_matrix(np.eye(2))
         
-        # Initialize MPS and MPO
-        self.mps = self._init_mps()
-        self.mpo = self._init_mpo()
-        
-    def _init_mps(self) -> List[np.ndarray]:
-        """Initialize random MPS"""
-        mps = []
-        D = min(2, self.max_bond_dim)
-        
-        # First site: (1 x 2 x D)
-        site = np.random.random((1, 2, D)) + 1j * np.random.random((1, 2, D))
-        mps.append(site / np.linalg.norm(site))
-        
-        # Middle sites: (D x 2 x D)
-        for _ in range(1, self.L-1):
-            site = np.random.random((D, 2, D)) + 1j * np.random.random((D, 2, D))
-            mps.append(site / np.linalg.norm(site))
-            
-        # Last site: (D x 2 x 1)
-        site = np.random.random((D, 2, 1)) + 1j * np.random.random((D, 2, 1))
-        mps.append(site / np.linalg.norm(site))
-        
-        return mps
+        self.left_block = self._init_site()
+        self.right_block = self._init_site()
+        self.current_size = 1  
+
+    def _init_site(self) -> Dict[str, scipy.sparse.csr_matrix]:
+        return {
+            'H': scipy.sparse.csr_matrix((2, 2)),
+            'Splus': self.Splus,
+            'Sminus': self.Sminus,
+            'Sz': self.Sz
+        }
     
-    def _init_mpo(self) -> List[np.ndarray]:
-        """Initialize Heisenberg MPO"""
-        mpo = []
+    def enlarge_block(self, block: Dict[str, scipy.sparse.csr_matrix]) -> Dict[str, scipy.sparse.csr_matrix]:
+        """
+        扩大量子块的维度，包括自旋耦合的效应
         
-        # First site: (1 x 5 x 2 x 2)
-        W = np.zeros((1, 5, 2, 2), dtype=complex)
-        W[0, 0] = self.I2
-        W[0, 1] = self.J * self.Sx
-        W[0, 2] = self.J * self.Sy
-        W[0, 3] = self.J * self.Sz
-        W[0, 4] = -self.I2
-        mpo.append(W)
+        H' = H ⊗ I + (J/2) * (S⁺ ⊗ S⁻ + S⁻ ⊗ S⁺) + J * (Sᶻ ⊗ Sᶻ)
+        """
+        dim = block['H'].shape[0]
+        H_new = scipy.sparse.kron(block['H'], self.I2, format='csr')
+        identity_dim = scipy.sparse.identity(dim, format='csr')
+
+        H_new += (self.J / 2) * (scipy.sparse.kron(block['Splus'], self.Sminus, format='csr') +
+                                  scipy.sparse.kron(block['Sminus'], self.Splus, format='csr'))
+        H_new += self.J * scipy.sparse.kron(block['Sz'], self.Sz, format='csr')
         
-        # Middle sites: (5 x 5 x 2 x 2)
-        W = np.zeros((5, 5, 2, 2), dtype=complex)
-        W[0, 0] = self.I2
-        W[1, 4] = self.Sx
-        W[2, 4] = self.Sy
-        W[3, 4] = self.Sz
-        W[4, 4] = self.I2
-        
-        for _ in range(self.L-2):
-            mpo.append(W.copy())
-        
-        # Last site: (5 x 1 x 2 x 2)
-        W = np.zeros((5, 1, 2, 2), dtype=complex)
-        W[4, 0] = self.I2
-        mpo.append(W)
-        
-        return mpo
+        return {
+            'H': H_new,
+            'Splus': scipy.sparse.kron(identity_dim, self.Splus, format='csr'),
+            'Sminus': scipy.sparse.kron(identity_dim, self.Sminus, format='csr'),
+            'Sz': scipy.sparse.kron(identity_dim, self.Sz, format='csr')
+        }
     
-    def _contract_two_sites(self, site1: np.ndarray, site2: np.ndarray) -> np.ndarray:
-        """Contract two adjacent MPS sites"""
-        return np.tensordot(site1, site2, axes=(2, 0))
-    
-    def _contract_mps_mpo_two_sites(self, two_site_state: np.ndarray, 
-                                     mpo1: np.ndarray, mpo2: np.ndarray) -> np.ndarray:
-        """Apply two MPO sites to a two-site state"""
-        # Contract first site with first MPO
-        temp1 = np.tensordot(two_site_state, mpo1, axes=([1, 2], [2, 3]))  # (1, 5, 2)
+    def get_superblock_hamiltonian(self, left_block: Dict[str, scipy.sparse.csr_matrix], right_block: Dict[str, scipy.sparse.csr_matrix]) -> scipy.sparse.csr_matrix:
+        """构造超级块哈密顿量
+        H_super = H_left ⊗ I_right + I_left ⊗ H_right + (J/2) * (S⁺_left ⊗ S⁻_right + S⁻_left ⊗ S⁺_right) + J * (Sᶻ_left ⊗ Sᶻ_right)
+        """
+        left_dim = left_block['H'].shape[0]
+        right_dim = right_block['H'].shape[0]
         
-        # Contract second site with second MPO
-        temp2 = np.tensordot(temp1, mpo2, axes=([1, 2], [2, 3]))  # (1, 2)
+        H_super = (scipy.sparse.kron(left_block['H'], scipy.sparse.identity(right_dim, format='csr')) +
+                    scipy.sparse.kron(scipy.sparse.identity(left_dim, format='csr'), right_block['H']))
+
+        H_super += (self.J / 2) * (
+            scipy.sparse.kron(left_block['Splus'], right_block['Sminus']) +
+            scipy.sparse.kron(left_block['Sminus'], right_block['Splus'])
+        )
+        H_super += self.J * scipy.sparse.kron(left_block['Sz'], right_block['Sz'])
     
-        return temp2
-
-    def _svd_truncate(self, matrix: np.ndarray, max_dim: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-        """Perform SVD decomposition with truncation"""
-        U, S, Vh = np.linalg.svd(matrix, full_matrices=False)
-        
-        truncation_dim = min(len(S), max_dim)
-        truncation_error = 1 - np.sum(S[:truncation_dim]**2) / np.sum(S**2)
-        
-        U = U[:, :truncation_dim]
-        S = S[:truncation_dim]
-        Vh = Vh[:truncation_dim, :]
-
-        return U, S, Vh, truncation_error
+        return H_super
     
-    def sweep(self, direction: str = 'right') -> Tuple[float, float]:
-        """Execute one DMRG sweep"""
-        if direction not in ['right', 'left']:
-            raise ValueError("direction must be 'right' or 'left'")
+    def dmrg_step(self) -> Tuple[float, float]:
+        """执行一次DMRG迭代
+        1. 扩展左右量子块
+        2. 构造超级块哈密顿量
+        3. 求解基态能量和波函数
+        4. 计算约化密度矩阵
+        5. 对密度矩阵进行对角化以获取保留的态
+    
+        约化密度矩阵公式:
+        ρ = |ψ⟩⟨ψ| / Tr(|ψ⟩⟨ψ|) 
+        其中 |ψ⟩ 为超级块的基态波函数。
+        """
+        left_enlarged = self.enlarge_block(self.left_block)
+        right_enlarged = self.enlarge_block(self.right_block)
 
-        sites = range(self.L-1) if direction == 'right' else range(self.L-1, 0, -1)
-        max_truncation_error = 0
-        energy = 0
+        left_dim = left_enlarged['H'].shape[0]
+        right_dim = right_enlarged['H'].shape[0]
+        
+        H_super = self.get_superblock_hamiltonian(left_enlarged, right_enlarged)
+        energy, psi = scipy.sparse.linalg.eigsh(H_super, k=1, which='SA')
+        psi = scipy.sparse.csr_matrix(psi.flatten().reshape(left_dim, right_dim))
 
-        for i in sites:
-            # Contract two sites
-            if direction == 'right':
-                two_site = self._contract_two_sites(self.mps[i], self.mps[i+1])
-                H_two_site = self._contract_mps_mpo_two_sites(two_site, self.mpo[i], self.mpo[i+1])
-            else:
-                two_site = self._contract_two_sites(self.mps[i-1], self.mps[i])
-                H_two_site = self._contract_mps_mpo_two_sites(two_site, self.mpo[i-1], self.mpo[i])
+        left_dim = left_enlarged['H'].shape[0]
+        right_dim = right_enlarged['H'].shape[0]
 
-            # Reshape for eigenvalue problem
-            a1, s1, a2, s2 = two_site.shape
-            left_dim = a1 * s1
-            right_dim = a2 * s2
-            
-            print(f"two_site shape: {two_site.shape}")
-            print(f"H_two_site shape before reshape: {H_two_site.shape}")
+        # 计算左右块的约化密度矩阵
+        rho_left = psi @ psi.conj().T
+        rho_left /= rho_left.trace()
 
-            # Reshape state and Hamiltonian consistently
-            state_vector = two_site.reshape(left_dim * right_dim)
-            H_matrix = H_two_site.reshape(left_dim * right_dim, left_dim * right_dim)
+        rho_right = psi.T @ psi.conj()
+        rho_right /= rho_right.trace()
+        
+        U_left, s_left, _ = scipy.linalg.svd(rho_left.toarray(), full_matrices=False)
+        U_right, s_right, _ = scipy.linalg.svd(rho_right.toarray(), full_matrices=False)
 
-            # Ensure matrix is Hermitian
-            H_matrix = 0.5 * (H_matrix + H_matrix.conj().T)
+        num_states = min(self.max_states, len(s_left), len(s_right))
 
-            # Solve eigenvalue problem
-            e, v = scipy.sparse.linalg.eigsh(H_matrix, k=1, which='SA', v0=state_vector)
-            energy = e[0].real
+        self.left_block = {
+            'H': self._transform_operator(left_enlarged['H'], U_left[:, :num_states]),
+            'Splus': self._transform_operator(left_enlarged['Splus'], U_left[:, :num_states]),
+            'Sminus': self._transform_operator(left_enlarged['Sminus'], U_left[:, :num_states]),
+            'Sz': self._transform_operator(left_enlarged['Sz'], U_left[:, :num_states])
+        }
 
-            # Reshape eigenvector and perform SVD
-            v = v[:, 0].reshape(a1 * s1, a2 * s2)
-            U, S, Vh, trunc_err = self._svd_truncate(v, self.max_bond_dim)
+        self.right_block = {
+            'H': self._transform_operator(right_enlarged['H'], U_right[:, :num_states]),
+            'Splus': self._transform_operator(right_enlarged['Splus'], U_right[:, :num_states]),
+            'Sminus': self._transform_operator(right_enlarged['Sminus'], U_right[:, :num_states]),
+            'Sz': self._transform_operator(right_enlarged['Sz'], U_right[:, :num_states])
+        }
 
-            # Update MPS tensors
-            if direction == 'right':
-                self.mps[i] = U.reshape(a1, s1, -1)
-                self.mps[i+1] = (np.diag(S) @ Vh).reshape(-1, s2, a2)
-            else:
-                self.mps[i-1] = U.reshape(a1, s1, -1)
-                self.mps[i] = (np.diag(S) @ Vh).reshape(-1, s2, a2)
+        self.current_size += 1
+        return energy[0], (np.sum(s_right[:num_states]) + np.sum(s_left[:num_states])) / 2
 
-            max_truncation_error = max(max_truncation_error, trunc_err)
-
-        return energy, max_truncation_error
-
-    def run(self, max_sweeps: int = 20) -> Tuple[List[float], List[float]]:
-        """Run DMRG optimization"""
+    def _transform_operator(self, operator: scipy.sparse.csr_matrix, transformation_matrix: np.ndarray) -> scipy.sparse.csr_matrix:
+        """对算符进行变换以得到新的算符
+        
+        A' = T† A T
+        其中 T 为变换矩阵。
+        """
+        return transformation_matrix.conj().T @ operator @ transformation_matrix
+    
+    def run(self) -> Tuple[List[float], List[float]]:
         energies = []
         truncation_errors = []
         
-        for sweep in range(max_sweeps):
-            # Right sweep
-            energy_right, trunc_err_right = self.sweep('right')
-            # Left sweep
-            energy_left, trunc_err_left = self.sweep('left')
+        for step in range(self.L - 1):
+            energy, truncation_weight = self.dmrg_step()
+            per_site_energy = energy / (self.current_size * 2)
+            truncation_error = 1 - truncation_weight
             
-            energy = (energy_right + energy_left) / 2
-            trunc_err = max(trunc_err_right, trunc_err_left)
-            
-            energies.append(energy)
-            truncation_errors.append(trunc_err)
-            
-            # Check convergence
-            if sweep > 0 and abs(energies[-1] - energies[-2]) < self.convergence_threshold:
-                print(f"Converged at sweep {sweep+1}")
+            if energies and abs(per_site_energy - energies[-1]) < self.convergence_threshold:
+                print(f"Converged at step {self.current_size}: Per site energy = {per_site_energy:.10f}")
                 break
-                
-            print(f"Sweep {sweep+1}: Energy = {energy:.10f}, "
-                  f"Truncation Error = {trunc_err:.2e}")
+            
+            energies.append(per_site_energy)
+            truncation_errors.append(truncation_error)
+            
+            print(f"Step {self.current_size:2d}: "
+                  f"Energy = {energy:.10f}, "
+                  f"Per site energy = {per_site_energy:.10f}, "
+                  f"Truncation Error = {truncation_error:.2e}")
         
         return energies, truncation_errors
 
-def main():
-    # Model parameters
+def main() -> Tuple[List[float], List[float]]:
     L = 100
     J = 1.0
-    max_bond_dim = 20
-    convergence_threshold = 1e-10
-    
-    # Exact solution (Bethe ansatz)
+    max_states = 20
+    convergence_threshold = 1e-10  # 收敛阈值
+
     exact_energy_per_site = -np.log(2) + 0.25
     exact_total_energy = L * exact_energy_per_site
     
-    # Run MPS simulation
-    model = HeisenbergMPS(L, J, max_bond_dim, convergence_threshold)
-    energies, truncation_errors = model.run()
+    dmrg = HeisenbergDMRG(L, J, max_states, convergence_threshold)
+    energies, truncation_errors = dmrg.run()
     
-    # Output results
     print(f"\nResults for {L}-site Heisenberg chain:")
-    print(f"MPS ground state energy: {energies[-1]:.10f}")
+    print(f"DMRG ground state energy: {energies[-1] * L:.10f}")
     print(f"Exact ground state energy: {exact_total_energy:.10f}")
-    print(f"Relative error: {abs(energies[-1] - exact_total_energy) / abs(exact_total_energy):.2e}")
+    print(f"Relative error: {abs(energies[-1] * L - exact_total_energy) / abs(exact_total_energy):.2e}")
     print(f"Maximum truncation error: {max(truncation_errors):.2e}")
+    
+    print(f"\nPer site energies:")
+    print(f"DMRG: {energies[-1]:.10f}")
+    print(f"Exact: {exact_energy_per_site:.10f}")
     
     return energies, truncation_errors
 
