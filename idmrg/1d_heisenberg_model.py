@@ -4,31 +4,25 @@ import scipy.sparse.linalg
 import time
 from typing import Tuple, List, Dict
 
-
 class HeisenbergDMRG:
     '''
     1D Heisenberg 模型的哈密顿量 H
-    H = -J * ∑(i=1 to L-1) (S_i ⋅ S_(i+1))
-
+    H = J * ∑(i=1 to L-1) S_i ⋅ S_(i+1)
+      = J/2 * ∑(i=1 to L-1) (S⁺_i S⁻_(i+1) + S⁻_i S⁺_(i+1)) + J * ∑(i=1 to L-1) Sᶻ_i Sᶻ_(i+1)
     其中：
     J 是耦合常数，表示自旋之间的相互作用强度。
     L 是系统中自旋粒子的总数。
-    S_i 是第 i 个自旋算符，包含三个分量：
-    S_i = (S_x^i, S_y^i, S_z^i)
-
-    自旋之间的相互作用项可以具体表示为：
-    H = -J * ∑(i=1 to L-1) (S_x^i S_x^(i+1) + S_y^i S_y^(i+1) + S_z^i S_z^(i+1))
     '''
     def __init__(self, L, J=1.0, max_states=50, convergence_threshold=1e-5):
         self.L = L  
         self.J = J  
         self.max_states = max_states  
-        self.convergence_threshold = convergence_threshold  # 收敛阈值
+        self.convergence_threshold = convergence_threshold
         
-        self.Sx = scipy.sparse.csr_matrix(0.5 * np.array([[0., 1.], [1., 0.]]))
-        self.Sy = scipy.sparse.csr_matrix(0.5 * np.array([[0., -1j], [1j, 0.]]))
         self.Sz = scipy.sparse.csr_matrix(0.5 * np.array([[1., 0.], [0., -1.]]))
-        self.I2 = scipy.sparse.csr_matrix(np.eye(2))  # 保持单位矩阵为稀疏格式
+        self.Splus = scipy.sparse.csr_matrix(np.array([[0., 1.], [0., 0.]]))
+        self.Sminus = scipy.sparse.csr_matrix(np.array([[0., 0.], [1., 0.]]))
+        self.I2 = scipy.sparse.csr_matrix(np.eye(2))
         
         self.left_block = self._init_site()
         self.right_block = self._init_site()
@@ -36,9 +30,9 @@ class HeisenbergDMRG:
 
     def _init_site(self) -> Dict[str, scipy.sparse.csr_matrix]:
         return {
-            'H': scipy.sparse.csr_matrix((2, 2)),  # 保持稀疏格式
-            'Sx': self.Sx,
-            'Sy': self.Sy,
+            'H': scipy.sparse.csr_matrix((2, 2)),
+            'Splus': self.Splus,
+            'Sminus': self.Sminus,
             'Sz': self.Sz
         }
     
@@ -46,26 +40,26 @@ class HeisenbergDMRG:
         """
         扩大量子块的维度，包括自旋耦合的效应
         
-        H' = H ⊗ I + J * (Sᵡ ⊗ Sᵡ + Sʏ ⊗ Sʏ + Sᶻ ⊗ Sᶻ)
+        H' = H ⊗ I + (J/2) * (S⁺ ⊗ S⁻ + S⁻ ⊗ S⁺) + J * (Sᶻ ⊗ Sᶻ)
         """
         dim = block['H'].shape[0]
         H_new = scipy.sparse.kron(block['H'], self.I2, format='csr')
         identity_dim = scipy.sparse.identity(dim, format='csr')
 
-        H_new += self.J * (scipy.sparse.kron(block['Sx'], self.Sx, format='csr') +
-                           scipy.sparse.kron(block['Sy'], self.Sy, format='csr') +
-                           scipy.sparse.kron(block['Sz'], self.Sz, format='csr'))
+        H_new += (self.J / 2) * (scipy.sparse.kron(block['Splus'], self.Sminus, format='csr') +
+                                  scipy.sparse.kron(block['Sminus'], self.Splus, format='csr'))
+        H_new += self.J * scipy.sparse.kron(block['Sz'], self.Sz, format='csr')
         
         return {
             'H': H_new,
-            'Sx': scipy.sparse.kron(identity_dim, self.Sx, format='csr'),
-            'Sy': scipy.sparse.kron(identity_dim, self.Sy, format='csr'),
+            'Splus': scipy.sparse.kron(identity_dim, self.Splus, format='csr'),
+            'Sminus': scipy.sparse.kron(identity_dim, self.Sminus, format='csr'),
             'Sz': scipy.sparse.kron(identity_dim, self.Sz, format='csr')
         }
     
     def get_superblock_hamiltonian(self, left_block: Dict[str, scipy.sparse.csr_matrix], right_block: Dict[str, scipy.sparse.csr_matrix]) -> scipy.sparse.csr_matrix:
         """构造超级块哈密顿量
-        H_super = H_left ⊗ I_right + I_left ⊗ H_right + J * (Sᵡ_left ⊗ Sᵡ_right + Sʏ_left ⊗ Sʏ_right + Sᶻ_left ⊗ Sᶻ_right)
+        H_super = H_left ⊗ I_right + I_left ⊗ H_right + (J/2) * (S⁺_left ⊗ S⁻_right + S⁻_left ⊗ S⁺_right) + J * (Sᶻ_left ⊗ Sᶻ_right)
         """
         left_dim = left_block['H'].shape[0]
         right_dim = right_block['H'].shape[0]
@@ -73,15 +67,15 @@ class HeisenbergDMRG:
         H_super = (scipy.sparse.kron(left_block['H'], scipy.sparse.identity(right_dim, format='csr')) +
                     scipy.sparse.kron(scipy.sparse.identity(left_dim, format='csr'), right_block['H']))
 
-        H_super += (self.J * (
-            scipy.sparse.kron(left_block['Sx'], right_block['Sx']) +
-            scipy.sparse.kron(left_block['Sy'], right_block['Sy']) +
-            scipy.sparse.kron(left_block['Sz'], right_block['Sz'])
-        ))
+        H_super += (self.J / 2) * (
+            scipy.sparse.kron(left_block['Splus'], right_block['Sminus']) +
+            scipy.sparse.kron(left_block['Sminus'], right_block['Splus'])
+        )
+        H_super += self.J * scipy.sparse.kron(left_block['Sz'], right_block['Sz'])
     
         return H_super
     
-    def dmrg_step(self)-> Tuple[float, float]:
+    def dmrg_step(self) -> Tuple[float, float]:
         """执行一次DMRG迭代
         1. 扩展左右量子块
         2. 构造超级块哈密顿量
@@ -120,15 +114,15 @@ class HeisenbergDMRG:
 
         self.left_block = {
             'H': self._transform_operator(left_enlarged['H'], U_left[:, :num_states]),
-            'Sx': self._transform_operator(left_enlarged['Sx'], U_left[:, :num_states]),
-            'Sy': self._transform_operator(left_enlarged['Sy'], U_left[:, :num_states]),
+            'Splus': self._transform_operator(left_enlarged['Splus'], U_left[:, :num_states]),
+            'Sminus': self._transform_operator(left_enlarged['Sminus'], U_left[:, :num_states]),
             'Sz': self._transform_operator(left_enlarged['Sz'], U_left[:, :num_states])
         }
 
         self.right_block = {
             'H': self._transform_operator(right_enlarged['H'], U_right[:, :num_states]),
-            'Sx': self._transform_operator(right_enlarged['Sx'], U_right[:, :num_states]),
-            'Sy': self._transform_operator(right_enlarged['Sy'], U_right[:, :num_states]),
+            'Splus': self._transform_operator(right_enlarged['Splus'], U_right[:, :num_states]),
+            'Sminus': self._transform_operator(right_enlarged['Sminus'], U_right[:, :num_states]),
             'Sz': self._transform_operator(right_enlarged['Sz'], U_right[:, :num_states])
         }
 
@@ -166,7 +160,7 @@ class HeisenbergDMRG:
         
         return energies, truncation_errors
 
-def main()  -> Tuple[List[float], List[float]]:
+def main() -> Tuple[List[float], List[float]]:
     L = 100
     J = 1.0
     max_states = 20
