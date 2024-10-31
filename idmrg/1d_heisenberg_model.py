@@ -163,7 +163,7 @@ class HeisenbergDMRG:
 def main() -> Tuple[List[float], List[float]]:
     L = 100
     J = 1.0
-    max_states = 20
+    max_states = 50
     convergence_threshold = 1e-10  # 收敛阈值
 
     exact_energy_per_site = -np.log(2) + 0.25
