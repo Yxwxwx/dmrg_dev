@@ -1,8 +1,6 @@
 import numpy as np
 import scipy
-import scipy.sparse.linalg
-import scipy.sparse as sparse
-import math
+
 
 ## initial E and F matrices for the left and right vacuum states
 def initial_E(W):
@@ -15,6 +13,8 @@ def initial_F(W):
     F = np.zeros((W.shape[1], 1, 1))
     F[-1] = 1
     return F
+
+
 def contract_from_left(W, A, E, B):
     # the einsum function doesn't appear to optimize the contractions properly,
     # so we split it into individual summations in the optimal order
@@ -33,9 +33,6 @@ def contract_from_right(W, A, F, B):
     return np.einsum("tail,tkl->aik", Temp, B)
 
 
-
-
-
 # construct the F-matrices for all sites except the first
 def construct_F(Alist, MPO, Blist):
     F = [initial_F(MPO[-1])]
@@ -48,27 +45,32 @@ def construct_F(Alist, MPO, Blist):
 def construct_E(Alist, MPO, Blist):
     return [initial_E(MPO[0])]
 
+
 def Expectation(AList, MPO, BList):
     E = [[[1]]]
     for i in range(0, len(MPO)):
         E = contract_from_left(MPO[i], AList[i], E, BList[i])
     return E[0][0][0]
 
+
 # 2-1 coarse-graining of two site MPO into one site
 def coarse_grain_MPO(W, X):
-    return np.reshape(np.einsum("abst,bcuv->acsutv", W, X),
-                      [W.shape[0], X.shape[1],
-                       W.shape[2] * X.shape[2],
-                       W.shape[3] * X.shape[3]])
-
-
-
+    return np.reshape(
+        np.einsum("abst,bcuv->acsutv", W, X),
+        [W.shape[0], X.shape[1], W.shape[2] * X.shape[2], W.shape[3] * X.shape[3]],
+    )
 
 
 def product_W(W1, W2):
-    return np.reshape(np.einsum("abst,cdtu->acbdsu", W1, W2), [W1.shape[0] * W2.shape[0],
-                                                               W1.shape[1] * W2.shape[1],
-                                                               W1.shape[2], W2.shape[3]])
+    return np.reshape(
+        np.einsum("abst,cdtu->acbdsu", W1, W2),
+        [
+            W1.shape[0] * W2.shape[0],
+            W1.shape[1] * W2.shape[1],
+            W1.shape[2],
+            W2.shape[3],
+        ],
+    )
 
 
 def product_MPO(M1, M2):
@@ -81,16 +83,17 @@ def product_MPO(M1, M2):
 
 # 2-1 coarse-graining of two-site MPS into one site
 def coarse_grain_MPS(A, B):
-    return np.reshape(np.einsum("sij,tjk->stik", A, B),
-                      [A.shape[0] * B.shape[0], A.shape[1], B.shape[2]])
+    return np.reshape(
+        np.einsum("sij,tjk->stik", A, B),
+        [A.shape[0] * B.shape[0], A.shape[1], B.shape[2]],
+    )
 
 
 def fine_grain_MPS(A, dims):
     assert A.shape[0] == dims[0] * dims[1]
-    Theta = np.transpose(np.reshape(A, dims + [A.shape[1], A.shape[2]]),
-                         (0, 2, 1, 3))
+    Theta = np.transpose(np.reshape(A, dims + [A.shape[1], A.shape[2]]), (0, 2, 1, 3))
     M = np.reshape(Theta, (dims[0] * A.shape[1], dims[1] * A.shape[2]))
-    U, S, V = np.linalg.svd(M, full_matrices=0)
+    U, S, V = np.linalg.svd(M, full_matrices=False)
     U = np.reshape(U, (dims[0], A.shape[1], -1))
     V = np.transpose(np.reshape(V, (-1, dims[1], A.shape[2])), (1, 0, 2))
     # assert U is left-orthogonal
@@ -107,12 +110,13 @@ def truncate_MPS(U, S, V, m):
     V = V[:, 0:m, :]
     return U, S, V, trunc, m
 
-class HamiltonianMultiply(sparse.linalg.LinearOperator):
+
+class HamiltonianMultiply(scipy.sparse.linalg.LinearOperator):
     def __init__(self, E, W, F):
         self.E = E
         self.W = W
         self.F = F
-        self.dtype = np.dtype('d')
+        self.dtype = np.dtype("d")
         self.req_shape = [W.shape[2], E.shape[1], F.shape[1]]
         # self.req_shape = [W.shape[2], E.shape[1], F.shape[2]] ORIGINAL VERSION
         self.size = self.req_shape[0] * self.req_shape[1] * self.req_shape[2]
@@ -135,7 +139,7 @@ def optimize_site(A, W, E, F):
     # we choose tol=1E-8 here, which is OK for small calculations.
     # to bemore robust, we should take the tol -> 0 towards the end
     # of the calculation.
-    E, V = sparse.linalg.eigsh(H, 1, v0=A, which='SA', tol=1E-8)
+    E, V = scipy.sparse.linalg.eigsh(H, 1, v0=A, which="SA", tol=1e-8)
     return (E[0], np.reshape(V[:, 0], H.req_shape))
 
 
@@ -143,14 +147,14 @@ def optimize_two_sites(A, B, W1, W2, E, F, m, dir):
     W = coarse_grain_MPO(W1, W2)
     AA = coarse_grain_MPS(A, B)
     H = HamiltonianMultiply(E, W, F)
-    E, V = sparse.linalg.eigsh(H, 1, v0=AA, which='SA')
+    E, V = scipy.sparse.linalg.eigsh(H, 1, v0=AA, which="SA")
     AA = np.reshape(V[:, 0], H.req_shape)
     A, S, B = fine_grain_MPS(AA, [A.shape[0], B.shape[0]])
     A, S, B, trunc, m = truncate_MPS(A, S, B, m)
-    if (dir == 'right'):
+    if dir == "right":
         B = np.einsum("ij,sjk->sik", np.diag(S), B)
     else:
-        assert dir == 'left'
+        assert dir == "left"
         A = np.einsum("sij,jk->sik", A, np.diag(S))
     return E[0], A, B, trunc, m
 
@@ -161,26 +165,33 @@ def two_site_dmrg(MPS, MPO, m, sweeps):
     F.pop()
     for sweep in range(0, int(sweeps / 2)):
         for i in range(0, len(MPS) - 2):
-            Energy, MPS[i], MPS[i + 1], trunc, states = optimize_two_sites(MPS[i], MPS[i + 1],
-                                                                           MPO[i], MPO[i + 1],
-                                                                           E[-1], F[-1], m, 'right')
-            print("Sweep {:} Sites {:},{:}    Energy {:16.12f}    States {:4} Truncation {:16.12f}"
-                  .format(sweep * 2, i, i + 1, Energy, states, trunc))
+            Energy, MPS[i], MPS[i + 1], trunc, states = optimize_two_sites(
+                MPS[i], MPS[i + 1], MPO[i], MPO[i + 1], E[-1], F[-1], m, "right"
+            )
+            print(
+                "Sweep {:} Sites {:},{:}    Energy {:16.12f}    States {:4} Truncation {:16.12f}".format(
+                    sweep * 2, i, i + 1, Energy, states, trunc
+                )
+            )
             E.append(contract_from_left(MPO[i], MPS[i], E[-1], MPS[i]))
-            F.pop();
+            F.pop()
         for i in range(len(MPS) - 2, 0, -1):
-            Energy, MPS[i], MPS[i + 1], trunc, states = optimize_two_sites(MPS[i], MPS[i + 1],
-                                                                           MPO[i], MPO[i + 1],
-                                                                           E[-1], F[-1], m, 'left')
-            print("Sweep {} Sites {},{}    Energy {:16.12f}    States {:4} Truncation {:16.12f}"
-                  .format(sweep * 2 + 1, i, i + 1, Energy, states, trunc))
+            Energy, MPS[i], MPS[i + 1], trunc, states = optimize_two_sites(
+                MPS[i], MPS[i + 1], MPO[i], MPO[i + 1], E[-1], F[-1], m, "left"
+            )
+            print(
+                "Sweep {} Sites {},{}    Energy {:16.12f}    States {:4} Truncation {:16.12f}".format(
+                    sweep * 2 + 1, i, i + 1, Energy, states, trunc
+                )
+            )
             F.append(contract_from_right(MPO[i + 1], MPS[i + 1], F[-1], MPS[i + 1]))
-            E.pop();
+            E.pop()
     return MPS
+
 
 d = 2  # local bond dimension
 N = 100  # number of sites
-D = 10 # virtue bond dimension
+D = 10  # virtue bond dimension
 
 InitialA1 = np.zeros((d, 1, 1))
 InitialA1[0, 0, 0] = 1
@@ -193,19 +204,20 @@ MPS = [InitialA1, InitialA2] * int(N / 2)
 ## Local operators
 I = np.identity(2)
 Z = np.zeros((2, 2))
-Sz = np.array([[0.5, 0],
-               [0, -0.5]])
-Sp = np.array([[0, 0],
-               [1, 0]])
-Sm = np.array([[0, 1],
-               [0, 0]])
+Sz = np.array([[0.5, 0], [0, -0.5]])
+Sp = np.array([[0, 0], [1, 0]])
+Sm = np.array([[0, 1], [0, 0]])
 
 ## Hamiltonian MPO
-W = np.array([[I, Sz, 0.5 * Sp, 0.5 * Sm, Z],
-              [Z, Z, Z, Z, Sz],
-              [Z, Z, Z, Z, Sm],
-              [Z, Z, Z, Z, Sp],
-              [Z, Z, Z, Z, I]])
+W = np.array(
+    [
+        [I, Sz, 0.5 * Sp, 0.5 * Sm, Z],
+        [Z, Z, Z, Z, Sz],
+        [Z, Z, Z, Z, Sm],
+        [Z, Z, Z, Z, Sp],
+        [Z, Z, Z, Z, I],
+    ]
+)
 
 Wfirst = np.array([[I, Sz, 0.5 * Sp, 0.5 * Sm, Z]])
 
@@ -226,3 +238,4 @@ print("Final energy expectation value {}".format(Energy))
 
 H2 = Expectation(MPS, HamSquared, MPS)
 print("variance = {:16.12f}".format(H2 - Energy * Energy))
+
