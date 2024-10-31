@@ -13,17 +13,16 @@ class HeisenbergDMRG:
     J 是耦合常数，表示自旋之间的相互作用强度。
     L 是系统中自旋粒子的总数。
     '''
-    def __init__(self, L, J=1.0, max_states=50, convergence_threshold=1e-5):
+    def __init__(self, L, J=1.0, max_states=50):
         self.L = L  
         self.J = J  
         self.max_states = max_states  
-        self.convergence_threshold = convergence_threshold
-        
+
         self.Sz = scipy.sparse.csr_matrix(0.5 * np.array([[1., 0.], [0., -1.]]))
         self.Splus = scipy.sparse.csr_matrix(np.array([[0., 1.], [0., 0.]]))
         self.Sminus = scipy.sparse.csr_matrix(np.array([[0., 0.], [1., 0.]]))
         self.I2 = scipy.sparse.csr_matrix(np.eye(2))
-        
+
         self.left_block = self._init_site()
         self.right_block = self._init_site()
         self.current_size = 1  
@@ -97,9 +96,6 @@ class HeisenbergDMRG:
         energy, psi = scipy.sparse.linalg.eigsh(H_super, k=1, which='SA')
         psi = scipy.sparse.csr_matrix(psi.flatten().reshape(left_dim, right_dim))
 
-        left_dim = left_enlarged['H'].shape[0]
-        right_dim = right_enlarged['H'].shape[0]
-
         # 计算左右块的约化密度矩阵
         rho_left = psi @ psi.conj().T
         rho_left /= rho_left.trace()
@@ -146,10 +142,6 @@ class HeisenbergDMRG:
             per_site_energy = energy / (self.current_size * 2)
             truncation_error = 1 - truncation_weight
             
-            if energies and abs(per_site_energy - energies[-1]) < self.convergence_threshold:
-                print(f"Converged at step {self.current_size}: Per site energy = {per_site_energy:.10f}")
-                break
-            
             energies.append(per_site_energy)
             truncation_errors.append(truncation_error)
             
@@ -164,12 +156,11 @@ def main() -> Tuple[List[float], List[float]]:
     L = 100
     J = 1.0
     max_states = 50
-    convergence_threshold = 1e-10  # 收敛阈值
 
     exact_energy_per_site = -np.log(2) + 0.25
     exact_total_energy = L * exact_energy_per_site
     
-    dmrg = HeisenbergDMRG(L, J, max_states, convergence_threshold)
+    dmrg = HeisenbergDMRG(L, J, max_states)
     energies, truncation_errors = dmrg.run()
     
     print(f"\nResults for {L}-site Heisenberg chain:")
