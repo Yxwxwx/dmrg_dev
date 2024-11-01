@@ -347,7 +347,7 @@ def main() -> None:
 
     try:
         # Run DMRG optimization
-        model.run_dmrg("debug")
+        model.run_dmrg("quiet")
 
         # Calculate and display results
         final_energy = model.calculate_expectation()
