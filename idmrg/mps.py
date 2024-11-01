@@ -13,7 +13,7 @@ class MPO:
     def construct_mpo(self):
         """Constructs MPO for the Heisenberg Hamiltonian."""
         # Define local operators
-        I = np.identity(2)
+        I = np.identity(2)  # noqa: E741
         Z = np.zeros((2, 2))
         Sz = np.array([[0.5, 0], [0, -0.5]])
         Sp = np.array([[0, 0], [1, 0]])
