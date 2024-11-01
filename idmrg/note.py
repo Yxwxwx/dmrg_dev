@@ -192,6 +192,7 @@ class HeisenbergModel:
                     self.mpo.mpo[i], self.mps.mps[i], f_matrices[-1], self.mps.mps[i]
                 )
             )
+
         return e_matrices, f_matrices
 
     def optimize_two_sites(
@@ -205,10 +206,6 @@ class HeisenbergModel:
         direction: str,
     ) -> Tuple[float, NDArray, NDArray, float, int]:
         """Optimizes two-site tensors to minimize energy."""
-        print("a.shape", a.shape)
-        print("b.shape", b.shape)
-        print("e.shape", e.shape)
-        print("f.shape", f.shape)
         w = self.mpo.coarse_grain(w1, w2)
         aa = self.mps.coarse_grain(a, b)
 
@@ -226,7 +223,7 @@ class HeisenbergModel:
 
         return eigenvalue[0], a, b, truncation, states
 
-    def run_dmrg(self, arg="debug") -> List[NDArray]:
+    def run_dmrg(self) -> List[NDArray]:
         """Runs the two-site DMRG algorithm."""
         e_matrices, f_matrices = self.construct_boundaries()
         f_matrices.pop()  # Remove last F matrix as it's not needed initially
@@ -245,12 +242,11 @@ class HeisenbergModel:
                         "right",
                     )
                 )
-                if arg != "quiet":
-                    print(
-                        f"Sweep {sweep*2} Sites {i},{i+1}    "
-                        f"Energy {energy:16.12f}    States {states:4} "
-                        f"Truncation {trunc:16.12f}"
-                    )
+                print(
+                    f"Sweep {sweep*2} Sites {i},{i+1}    "
+                    f"Energy {energy:16.12f}    States {states:4} "
+                    f"Truncation {trunc:16.12f}"
+                )
 
                 e_matrices.append(
                     self.contract_left(
@@ -275,12 +271,11 @@ class HeisenbergModel:
                         "left",
                     )
                 )
-                if arg != "quiet":
-                    print(
-                        f"Sweep {sweep*2 + 1} Sites {i},{i+1}    "
-                        f"Energy {energy:16.12f}    States {states:4} "
-                        f"Truncation {trunc:16.12f}"
-                    )
+                print(
+                    f"Sweep {sweep*2 + 1} Sites {i},{i+1}    "
+                    f"Energy {energy:16.12f}    States {states:4} "
+                    f"Truncation {trunc:16.12f}"
+                )
 
                 f_matrices.append(
                     self.contract_right(
@@ -336,7 +331,7 @@ def main() -> None:
     LOCAL_DIM = 2  # Local bond dimension
     NUM_SITES = 10  # Number of sites
     BOND_DIM = 10  # Bond dimension for DMRG
-    NUM_SWEEPS = 2  # Number of DMRG sweeps
+    NUM_SWEEPS = 8  # Number of DMRG sweeps
 
     # Initialize quantum state components
     mpo = MPO(local_dim=LOCAL_DIM, num_sites=NUM_SITES)
@@ -347,7 +342,7 @@ def main() -> None:
 
     try:
         # Run DMRG optimization
-        model.run_dmrg("debug")
+        model.run_dmrg()
 
         # Calculate and display results
         final_energy = model.calculate_expectation()
